@@ -1,23 +1,49 @@
 <?php
+/**
+ * @copyright (c) 2012, Ezra Pool <ezra@tsdme.nl>
+ * @license LGPL v3
+ *
+ * This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU Lesser General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU Lesser General Public License for more details.
+
+    You should have received a copy of the GNU Lesser General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 App::uses('BaseAuthenticate', 'Controller/Component/Auth');
-
 class RijndaelAuthenticate extends BaseAuthenticate {
+	const version = '0.0.1';
+
+	const EXT_MCRYPT = 'mcrypt';
+	const EXT_OPENSSL = 'openssl';
 	
-	protected static $SALT;
+	protected static $config;
 
 	public function __construct(ComponentCollection $collection, $settings) {
-		self::_getCakeSalt();
+		self::_getCakeConfig();
 		
 		parent::__construct($collection, $settings);
 	}
 
-	public function authenticate(CakeRequest $request, CakeResponse $response) {
-		$user = $this->_findUser($request->data[$this->settings['userModel']]['email']);
-		
-		if($this->_decryptPWString($request->data[$this->settings['userModel']]['email'], $request->data[$this->settings['userModel']]['password'], $user['password'])){
-			return $user;
-		}
+	public function authenticate(CakeRequest $request, CakeResponse $response){
+		try{
+			$fields = $this->settings['fields'];
+			list($plugin, $model) = pluginSplit($this->settings['userModel']);
+
+			$user = $this->_findUser($request->data[$model][$fields['username']]);
+
+			if($this->_decryptPWString($request->data[$model][$fields['username']], $request->data[$model][$fields['password']], $user[$fields['password']])){
+				return $user;
+			}
+		} catch (Exception $e) {CakeLog::error($e);}
+
 		return false;
 	}
 
@@ -58,7 +84,7 @@ class RijndaelAuthenticate extends BaseAuthenticate {
 	 * Create an encrypted Rijndael password.
 	 *
 	 * NOTE: for security purposes the plain-text password isn't actually encrypted, so IF
-	 * the cyphertext would ever be broken, the password would still be 'safe'.
+	 * the ciphertext would ever be broken, the password would still be 'safe'.
 	 *
 	 * @param type $username The username used for 'signing' the password.
 	 * @param type $password The password that needs to be encrypted.
@@ -66,20 +92,19 @@ class RijndaelAuthenticate extends BaseAuthenticate {
 	 * @throws Exception When no suitable encryption libraries are found.
 	 */
 	public static function createEncryptedPassword($username, $password) {
-		self::_getCakeSalt();
+		self::_getCakeConfig();
 		
-		if (extension_loaded("mcrypt")) {
+		if (self::$config['Encryption']['extension'] == self::EXT_MCRYPT && extension_loaded("mcrypt")) {
 			$iv = self::_generateIV();
-			$key = self::createKey($username . $password . self::$SALT);
-			$pass = mcrypt_encrypt(MCRYPT_RIJNDAEL_256, $key, $username.self::$SALT, MCRYPT_MODE_CBC, $iv);
-		} elseif (extension_loaded('openssl') && function_exists('openssl_encrypt')) {
-			$pass = openssl_encrypt($password, 'AES-256-CBC', self::createKey($username . $password . self::$SALT), true);
+			$key = self::createKey($username . $password . self::$config['SALT']);
+			$pass = mcrypt_encrypt(self::$config['Encryption']['ciphername'], $key, $username.self::$config['SALT'], self::$config['Encryption']['ciphermode'], $iv);
+		} elseif (self::$config['Encryption']['extension'] == self::EXT_OPENSSL && extension_loaded('openssl') && function_exists('openssl_encrypt')) {
+			$pass = openssl_encrypt($password, self::$config['Encryption']['ciphername'], self::createKey($username . $password . self::$config['SALT']), true);
 			$iv = NULL;
 		} else {
 			throw new Exception("No suitable cryptography library found, You need to install Mcrypt or OpenSSL");
 		}
 		return base64_encode($pass).".". base64_encode($iv);
-//		return array("pass" => base64_encode($pass), "iv" => base64_encode($iv));
 	}
 
 	/**
@@ -99,15 +124,15 @@ class RijndaelAuthenticate extends BaseAuthenticate {
 			$iv = $ex[1];
 		}
 
-		if (extension_loaded('mcrypt')) {
-			$dstring = mcrypt_decrypt(MCRYPT_RIJNDAEL_256, self::createKey($username . $password . self::$SALT), base64_decode($data), MCRYPT_MODE_CBC, base64_decode($iv));
-			var_dump($dstring);
-		} elseif (extension_loaded('openssl') && function_exists('openssl_decrypt')) {
-			$dstring = openssl_decrypt($data, 'AES-256-CBC', self::createKey($username . $password . self::$SALT));
+		if (self::$config['Encryption']['extension'] == self::EXT_MCRYPT && extension_loaded('mcrypt')) {
+			$dstring = mcrypt_decrypt(self::$config['Encryption']['ciphername'], self::createKey($username . $password . self::$config['SALT']), base64_decode($data), self::$config['Encryption']['ciphermode'], base64_decode($iv));
+		} elseif (self::$config['Encryption']['extension'] == self::EXT_OPENSSL && extension_loaded('openssl') && function_exists('openssl_decrypt')) {
+			$dstring = openssl_decrypt($data, self::$config['Encryption']['ciphername'], self::createKey($username . $password . self::$config['SALT']));
 		} else {
 			throw new Exception("No suitable cryptography library found, You need to install Mcrypt or OpenSSL");
 		}
-		return trim($dstring) == $username.self::$SALT ? true : false;
+
+		return trim($dstring) == $username.self::$config['SALT'] ? true : false;
 	}
 
 	/**
@@ -115,17 +140,21 @@ class RijndaelAuthenticate extends BaseAuthenticate {
 	 * @return string IV
 	 */
 	protected static function _generateIV(){
-		$iv_size = mcrypt_get_iv_size(MCRYPT_RIJNDAEL_256, MCRYPT_MODE_CBC);
-		return mcrypt_create_iv($iv_size, MCRYPT_RAND);
+		$iv_size = mcrypt_get_iv_size(self::$config['Encryption']['ciphername'], self::$config['Encryption']['ciphermode']);
+		return mcrypt_create_iv($iv_size, self::$config['Encryption']['iv_source']);
 	}
 	/**
-	 * fill the static SALT variable with the SALT from the CakePHP core config.
+	 * fill the static config variable with the config options from core config and encryption config from plugin.
 	 *
-	 * This function needs to be called by all static methods relying on the SALT variable being set,
+	 * This function needs to be called by all static methods relying on the config variable being set
 	 * as the constructor for the class will not be called for static methods.
 	 */
-	protected static function _getCakeSalt(){
-		self::$SALT = Configure::read('Security.salt');
+
+	protected static function _getCakeConfig(){
+		self::$config['SALT'] = Configure::read('Security.salt');
+
+		Configure::load('RijndaelAuthentication.encryption');
+		self::$config['Encryption'] = Configure::read('Encryption');
 	}
 
 	/**
@@ -135,7 +164,45 @@ class RijndaelAuthenticate extends BaseAuthenticate {
 	 * @todo Use better keygenerator mhash, hash, etc.
 	 */
 	protected static function createKey($string){
-		return md5($string);
+		self::_getCakeConfig();
+
+		$hash = function_exists('hash');
+		$hash_algos = $hash ? hash_algos() : array();
+
+		$key = md5($string, TRUE);
+
+		if (self::$config['Encryption']['extension'] == self::EXT_MCRYPT && extension_loaded('mcrypt')) {
+			$key_size = mcrypt_get_key_size(self::$config['Encryption']['ciphername'], self::$config['Encryption']['ciphermode']);
+
+			switch(true){
+				case ($key_size >= 64 && $hash && in_array('sha512', $hash_algos)):
+					$key = hash('sha512', $string, TRUE);
+					break;
+				case ($key_size >= 32 && $hash && in_array('sha256', $hash_algos)):
+					$key = hash('sha256', $string, TRUE);
+					break;
+				case ($key_size >= 20):
+					$key = sha1($string, TRUE);
+					break;
+				case ($key_size >= 16):
+					$key = md5($string, TRUE);
+					break;
+			}
+		} elseif (self::$config['Encryption']['extension'] == self::EXT_OPENSSL && extension_loaded('openssl') && function_exists('openssl_decrypt')) {
+			switch(true){
+				case ($hash && in_array('sha512', $hash_algos)):
+					$key = hash('sha512', $string, TRUE);
+					break;
+				case ($hash && in_array('sha256', $hash_algos)):
+					$key = hash('sha256', $string, TRUE);
+					break;
+				default:
+					$key = sha1($string, TRUE);
+					break;
+			}
+		}
+
+		return $key;
 	}
 }
 

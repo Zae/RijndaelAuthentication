@@ -1,0 +1,97 @@
+RijndaelAuthentication for CakePHP 2.
+
+NOTE: I am not an security expert, this extension was made by me to better
+understand the CakePHP extensibility options. I don't know how secure this
+method is compared to a regular hash with salt, however I do you you should not
+be using home-made security methods in security sensitive environments. I take
+no responsibility.
+
+NOTE2: The plugin does support the OPENSSL extension, but it remains untested.
+I have no idea if it actually works because the documentation of the extension
+lacks.
+
+EXPLANATION:
+	Instead of using a normal hash of the users password, this plugin
+	creates an encrypted ciphertext of the users 'username' and the
+	configured Security.salt using the users plaintext as the key.
+
+	The resulting ciphertext and the used IV is concatenated and stored
+	as the password in the database.
+
+	When the user tries to authenticate the string is decrypted using the
+	password as the key and if the resulting plaintext is the 'username' of
+	the user including the Security.salt then the provided password is correct
+	otherwise if the resulting plaintext is garbage or otherwise not correct
+	the password is assumed wrong.
+
+	This way the password is never stored in the database, not even a hashed
+	version.
+
+INSTALL:
+	Copy or Clone the RijndaelAuthentication folder to your app/Plugin
+	or /plugins folder
+
+USAGE:
+	Configure the AuthComponent to use the RijndaelAuthentication and optionally
+	load the RijndaelAuthentiation component in your AppController.
+
+	<?php
+	public $components = array(
+		'Session',
+	    'Auth' => array(
+	        'loginAction' => array(
+	            'controller' => 'users',
+	            'action' => 'login'
+	        ),
+	        'authError' => 'Did you really think you are allowed to see that?',
+	        'authenticate' => array(
+				'RijndaelAuthentication.Rijndael' => array(
+					'userModel' => 'Gebruiker',
+					'fields' => array('username' => 'email')
+				),
+	        ),
+	    ),
+		'RijndaelAuthentication.Rijndael',
+	);
+	?>
+
+	Make sure your User object saves the right password to the database by using
+	the RijndaelAuthenticateBehavior.
+
+	Make sure you use the same fields as username and password as you configured
+	in the AuthComponent.
+
+	<?php
+		class User extends AppModel {
+			public $actsAs = array('RijndaelAuthentication.RijndaelAuthenticate');
+
+			public function beforeSave($options = array()) {
+				$this->data['Gebruiker']['password'] = $this->createEncryptedPassword($this->data['Gebruiker']['email'], $this->data['Gebruiker']['password']);
+
+				return true;
+			}
+	}
+	?>
+
+CONFIG:
+	The plugin loads configuration from the encryption.php file in the Config
+	folder of the plugin.
+
+	This file should be in the following format:
+
+	<?php
+	$config = array(
+		'Encryption' => array(
+			'extension' => 'mcrypt',
+			'ciphername' => MCRYPT_RIJNDAEL_256,
+			'ciphermode' => MCRYPT_MODE_CBC,
+			'iv_source' => MCRYPT_RAND
+		)
+	);
+	?>
+
+	+ Encryption.extension is the the extension used for encryption, mcrypt is
+	recommended, SEE NOTE2.
+	+ Encryption.ciphername is the name of the cipher used by mcrypt.
+	+ Encryption.ciphermode is the mode of the cipher used by mcrypt.
+	+ Encryption.iv_source is the source of the iv generator.
